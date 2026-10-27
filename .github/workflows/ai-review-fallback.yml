@@ -47,7 +47,9 @@ on:
         default: "main"
 
 concurrency:
-  group: ai-review-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
+  # Repo-wide: the Ollama reviewer backend is a single-slot service, so
+  # fallback runs for different PRs must queue rather than contend.
+  group: ai-review-fallback
   cancel-in-progress: false
 
 permissions:
@@ -81,7 +83,7 @@ jobs:
     # A small model answers a single prompt quickly; an unbounded job
     # pins the coverage gate for the platform default (6h) when the
     # tailnet or reviewer sticks.
-    timeout-minutes: 10
+    timeout-minutes: 20
     permissions:
       contents: read
       pull-requests: write
@@ -141,6 +143,16 @@ jobs:
           ai-primary-retry-delay-sec: "10"
           ai-max-tokens: "1024"
           ai-request-timeout-sec: "300"
+          # The 1.5B completes fine but drops the required verdict key
+          # (missing_verdict_key) — append-mode steering keeps the
+          # bundled prompt and adds the output contract.
+          system-prompt-mode: append
+          review-verbosity: concise
+          system-prompt: |
+            OUTPUT CONTRACT (highest priority): respond with a single JSON
+            object that ALWAYS contains a top-level "verdict" key with one
+            of these exact values: "approve", "comment", "request_changes".
+            Never omit "verdict". When in doubt use "comment".
         continue-on-error: true
 
       - name: Record outcome
@@ -171,7 +183,7 @@ jobs:
     # The action retries an unreachable endpoint internally and has no
     # bound of its own — 15min is generous for a small model; beyond
     # that it is unavailability, not slowness.
-    timeout-minutes: 15
+    timeout-minutes: 20
     permissions:
       contents: read
       pull-requests: write
@@ -251,6 +263,16 @@ jobs:
           # the client budget must outlast worst queue depth across
           # repos sharing one endpoint (~4 x 60-90s generations).
           ai-request-timeout-sec: "300"
+          # The 1.5B completes fine but drops the required verdict key
+          # (missing_verdict_key) — append-mode steering keeps the
+          # bundled prompt and adds the output contract.
+          system-prompt-mode: append
+          review-verbosity: concise
+          system-prompt: |
+            OUTPUT CONTRACT (highest priority): respond with a single JSON
+            object that ALWAYS contains a top-level "verdict" key with one
+            of these exact values: "approve", "comment", "request_changes".
+            Never omit "verdict". When in doubt use "comment".
         continue-on-error: true
 
       - name: Record outcome
