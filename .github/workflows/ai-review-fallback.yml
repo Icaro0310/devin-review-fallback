@@ -1,0 +1,285 @@
+name: ai-review-fallback
+
+# Reusable workflow: when a primary AI reviewer (e.g. Devin Review) does
+# not actually run on a PR head — trial exhausted, failed, or signal
+# unverifiable — two local-model reviewers produce real review evidence
+# over Tailscale, and a "Review Coverage" check records what executed.
+#
+#   PR -> classify
+#        ├ EXECUTED            -> coverage: success (primary), fallbacks skip
+#        ├ SKIPPED_CREDITS     -> review-a + review-b -> coverage
+#        ├ FAILED_BEFORE_REVIEW-> review-a + review-b -> coverage
+#        └ UNVERIFIED          -> review-a + review-b -> coverage
+#
+# Caller contract (see examples/caller.yml):
+#   on: pull_request_target -> uses: this workflow -> secrets: inherit
+#
+# Required caller configuration:
+#   secrets.TS_AUTHKEY        — Tailscale auth key tagged tag:gh-ollama-review
+#   vars.OLLAMA_TAILNET_URL   — e.g. http://<tailscale-ip>:11435 (YOUR endpoint)
+#   vars.OLLAMA_MODEL         — e.g. qwen2.5-coder:3b
+#
+# Security boundaries:
+#   - Callers MUST trigger on pull_request_target: this file and every
+#     checked-out byte come from the base branch, so a PR cannot alter
+#     its own review pipeline.
+#   - Neither reviewer checks out or runs PR-controlled code; review-a
+#     reads the diff through the GitHub API only, review-b checks out the
+#     BASE ref with tool-mode off.
+#   - Ollama is reached ONLY over Tailscale (ephemeral tagged node).
+#     Never publish your tailnet endpoint in the repo — it lives in
+#     vars/secrets.
+#   - Coverage never spoofs the primary reviewer's context and never
+#     approves — your merge gate reads the "Review Coverage" check.
+
+on:
+  workflow_call:
+    inputs:
+      wait-seconds:
+        description: "Seconds to wait for the primary reviewer status on the head before declaring it absent."
+        required: false
+        type: number
+        default: 180
+      scripts-ref:
+        description: "Git ref of this repo to fetch the helper scripts from (pin a tag for supply-chain safety)."
+        required: false
+        type: string
+        default: "main"
+
+concurrency:
+  group: ai-review-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  OLLAMA_URL: ${{ vars.OLLAMA_TAILNET_URL }}
+
+jobs:
+  classify:
+    runs-on: ubuntu-latest
+    outputs:
+      state: ${{ steps.c.outputs.state }}
+    steps:
+      - name: Fetch helper script
+        run: |
+          curl -fsSL "https://raw.githubusercontent.com/Icaro0310/devin-review-fallback/${{ inputs.scripts-ref }}/scripts/classify-devin-status.py" -o classify.py
+      - id: c
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: >-
+          python3 classify.py
+          --repo "${{ github.repository }}"
+          --sha "${{ github.event.pull_request.head.sha }}"
+          --wait-seconds ${{ inputs.wait-seconds }}
+
+  review-a:
+    needs: classify
+    if: needs.classify.outputs.state != 'EXECUTED'
+    runs-on: ubuntu-latest
+    # A small model answers a single prompt quickly; an unbounded job
+    # pins the coverage gate for the platform default (6h) when the
+    # tailnet or reviewer sticks.
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+    outputs:
+      result: ${{ steps.mark.outputs.result }}
+      critical: ${{ steps.rev.outputs.critical_count }}
+    steps:
+      - name: Preflight — creds and reachability
+        id: pre
+        env:
+          TS_KEY: ${{ secrets.TS_AUTHKEY }}
+        run: |
+          if [ -z "$TS_KEY" ]; then
+            echo "::warning::Tailscale auth key absent — reviewer A unavailable"
+            echo "ok=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if [ -z "$OLLAMA_URL" ]; then
+            echo "::warning::vars.OLLAMA_TAILNET_URL unset — reviewer A unavailable"
+            echo "ok=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          echo "ok=true" >> "$GITHUB_OUTPUT"
+
+      - name: Tailscale (ephemeral tag)
+        id: ts
+        if: steps.pre.outputs.ok == 'true'
+        uses: tailscale/github-action@99a8333667fff04fdd6cffb46dfd409f8329a7bf
+        with:
+          authkey: ${{ secrets.TS_AUTHKEY }}
+          tags: tag:gh-ollama-review
+        continue-on-error: true
+
+      - name: Endpoint probe
+        id: probe
+        if: steps.pre.outputs.ok == 'true' && steps.ts.outcome == 'success'
+        run: |
+          if curl -fsS --max-time 15 "$OLLAMA_URL/api/tags" -o /dev/null; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::Ollama endpoint unreachable over tailnet"
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Reviewer A — ai-code-reviewer (Ollama, API-only, no checkout)
+        id: rev
+        if: steps.probe.outputs.ok == 'true'
+        uses: xiaofuqing13/ai-code-reviewer@bab381a55f332a1b9fb3c6a5a962fb1e47feaeb2
+        with:
+          provider: ollama
+          base_url: ${{ vars.OLLAMA_TAILNET_URL }}
+          model: ${{ vars.OLLAMA_MODEL }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          fail_on: none
+          incremental: "false"
+        continue-on-error: true
+
+      - name: Record outcome
+        id: mark
+        if: always()
+        run: |
+          if [ "${{ steps.rev.outcome }}" = "success" ]; then
+            r=EXECUTED
+          elif [ "${{ steps.pre.outputs.ok }}" != "true" ] || \
+               [ "${{ steps.probe.outputs.ok }}" = "false" ] || \
+               [ "${{ steps.ts.outcome }}" = "failure" ]; then
+            r=UNAVAILABLE
+          else
+            r=FAILED
+          fi
+          echo "result=$r" >> "$GITHUB_OUTPUT"
+          echo "reviewer A: $r (findings=${{ steps.rev.outputs.findings_count || '?' }}, critical=${{ steps.rev.outputs.critical_count || '?' }})"
+
+  review-b:
+    needs: classify
+    if: needs.classify.outputs.state != 'EXECUTED'
+    runs-on: ubuntu-latest
+    # The action retries an unreachable endpoint internally and has no
+    # bound of its own — 15min is generous for a small model; beyond
+    # that it is unavailability, not slowness.
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+    outputs:
+      result: ${{ steps.mark.outputs.result }}
+    steps:
+      - name: Preflight — creds and reachability
+        id: pre
+        env:
+          TS_KEY: ${{ secrets.TS_AUTHKEY }}
+        run: |
+          if [ -z "$TS_KEY" ] || [ -z "$OLLAMA_URL" ]; then
+            echo "::warning::Tailscale key or OLLAMA_TAILNET_URL absent — reviewer B unavailable"
+            echo "ok=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          echo "ok=true" >> "$GITHUB_OUTPUT"
+
+      - name: Tailscale (ephemeral tag)
+        id: ts
+        if: steps.pre.outputs.ok == 'true'
+        uses: tailscale/github-action@99a8333667fff04fdd6cffb46dfd409f8329a7bf
+        with:
+          authkey: ${{ secrets.TS_AUTHKEY }}
+          tags: tag:gh-ollama-review
+        continue-on-error: true
+
+      # Base ref only — the PR head is never materialized in this job's
+      # workspace. tool-mode off + no evidence-providers-file means the
+      # action executes nothing but argv-only reads of trusted base code;
+      # PR content reaches the model solely via the redacted diff corpus.
+      - name: Checkout trusted base ref
+        if: steps.pre.outputs.ok == 'true' && steps.ts.outcome == 'success'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+
+      - name: Endpoint probe
+        id: probe
+        if: steps.pre.outputs.ok == 'true' && steps.ts.outcome == 'success'
+        run: |
+          if curl -fsS --max-time 15 "$OLLAMA_URL/api/tags" -o /dev/null; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::Ollama endpoint unreachable over tailnet"
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Reviewer B — pr-reviewer-action (Ollama via OpenAI API)
+        id: rev
+        if: steps.probe.outputs.ok == 'true'
+        uses: misospace/pr-reviewer-action@5b1839535748f3afd1bd3ef04e8009302cba9aa6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          ai-base-url: ${{ vars.OLLAMA_TAILNET_URL }}/v1
+          ai-api-format: openai
+          ai-model: ${{ vars.OLLAMA_MODEL }}
+          ai-api-key: ""
+          tool-mode: "off"
+          # review_blockers: request_changes verdict posts a native
+          # blocking review, approve posts an advisory comment — it can
+          # never publish an approval by construction.
+          publish-mode: review_blockers
+          # 'fail' not 'notice': a model that cannot produce a usable
+          # review must report FAILED here, not post a request_changes
+          # review that impersonates a blocking finding.
+          on-model-failure: fail
+          # Bound the action's own retry loop; json_object lets a small
+          # model hit the verdict contract instead of emitting free text
+          # that fails the parse -> retry cycle; the token cap bounds
+          # generation time on CPU-only hosts.
+          ai-response-format: json_object
+          ai-primary-retries: "2"
+          ai-primary-retry-delay-sec: "10"
+          ai-max-tokens: "2048"
+          ai-request-timeout-sec: "120"
+        continue-on-error: true
+
+      - name: Record outcome
+        id: mark
+        if: always()
+        run: |
+          if [ "${{ steps.rev.outcome }}" = "success" ]; then
+            r=EXECUTED
+          elif [ "${{ steps.pre.outputs.ok }}" != "true" ] || \
+               [ "${{ steps.probe.outputs.ok }}" = "false" ] || \
+               [ "${{ steps.ts.outcome }}" = "failure" ]; then
+            r=UNAVAILABLE
+          else
+            r=FAILED
+          fi
+          echo "result=$r" >> "$GITHUB_OUTPUT"
+          echo "reviewer B: $r"
+
+  coverage:
+    needs: [classify, review-a, review-b]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: write
+      statuses: write
+    steps:
+      - name: Fetch helper script
+        run: |
+          curl -fsSL "https://raw.githubusercontent.com/Icaro0310/devin-review-fallback/${{ inputs.scripts-ref }}/scripts/publish-review-coverage.py" -o publish.py
+      - name: Publish Review Coverage status
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DEVIN: ${{ needs.classify.outputs.state }}
+          A: ${{ needs.review-a.outputs.result }}
+          B: ${{ needs.review-b.outputs.result }}
+        run: >-
+          python3 publish.py
+          --repo "${{ github.repository }}"
+          --sha "${{ github.event.pull_request.head.sha }}"
+          --devin "${DEVIN:-SKIPPED}"
+          --a "${A:-SKIPPED}"
+          --b "${B:-SKIPPED}"
+          --a-critical "${{ needs.review-a.outputs.critical || 0 }}"
+          --target-url "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
