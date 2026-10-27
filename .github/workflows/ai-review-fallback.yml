@@ -155,8 +155,13 @@ jobs:
           echo "reviewer A: $r (findings=${{ steps.rev.outputs.findings_count || '?' }}, critical=${{ steps.rev.outputs.critical_count || '?' }})"
 
   review-b:
-    needs: classify
-    if: needs.classify.outputs.state != 'EXECUTED'
+    # Serialized after A: a single-slot Ollama (-np 1, the default on
+    # small VMs) cannot serve two reviewers at once — the second queues
+    # into its own request timeout. always() keeps B's outcome honest
+    # even when A failed. If you run OLLAMA_NUM_PARALLEL>1 you can
+    # revert this needs to just classify.
+    needs: [classify, review-a]
+    if: always() && needs.classify.outputs.state != 'EXECUTED'
     runs-on: ubuntu-latest
     # The action retries an unreachable endpoint internally and has no
     # bound of its own — 15min is generous for a small model; beyond
