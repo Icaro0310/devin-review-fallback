@@ -44,3 +44,13 @@ jobs:
       pull-requests: write
     uses: Icaro0310/devin-review-fallback/.github/workflows/auto-merge.yml@main
     secrets: inherit
+
+  # OPTIONAL complementary SAST layer (public repos — free tier).
+  # Needs secrets.SONAR_TOKEN + vars.SONAR_PROJECT_KEY; skips cleanly
+  # when unset. Trigger this one on pull_request (it scans the head).
+  sonar:
+    if: github.event_name == 'pull_request_target'
+    permissions:
+      contents: read
+    uses: Icaro0310/devin-review-fallback/.github/workflows/sonarcloud.yml@main
+    secrets: inherit
