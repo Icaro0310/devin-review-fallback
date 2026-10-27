@@ -83,7 +83,7 @@ jobs:
     # A small model answers a single prompt quickly; an unbounded job
     # pins the coverage gate for the platform default (6h) when the
     # tailnet or reviewer sticks.
-    timeout-minutes: 20
+    timeout-minutes: 25
     permissions:
       contents: read
       pull-requests: write
@@ -142,7 +142,7 @@ jobs:
           ai-primary-retries: "2"
           ai-primary-retry-delay-sec: "10"
           ai-max-tokens: "1024"
-          ai-request-timeout-sec: "300"
+          ai-request-timeout-sec: "600"
           # The 1.5B completes fine but drops the required verdict key
           # (missing_verdict_key) — append-mode steering keeps the
           # bundled prompt and adds the output contract.
@@ -186,7 +186,7 @@ jobs:
     # The action retries an unreachable endpoint internally and has no
     # bound of its own — 15min is generous for a small model; beyond
     # that it is unavailability, not slowness.
-    timeout-minutes: 20
+    timeout-minutes: 25
     permissions:
       contents: read
       pull-requests: write
@@ -265,7 +265,7 @@ jobs:
           # 300s: a single-slot Ollama queues requests server-side, so
           # the client budget must outlast worst queue depth across
           # repos sharing one endpoint (~4 x 60-90s generations).
-          ai-request-timeout-sec: "300"
+          ai-request-timeout-sec: "600"
           # The 1.5B completes fine but drops the required verdict key
           # (missing_verdict_key) — append-mode steering keeps the
           # bundled prompt and adds the output contract.
