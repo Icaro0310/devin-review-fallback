@@ -136,6 +136,11 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           fail_on: none
           incremental: "false"
+          ai-response-format: json_object
+          ai-primary-retries: "2"
+          ai-primary-retry-delay-sec: "10"
+          ai-max-tokens: "2048"
+          ai-request-timeout-sec: "300"
         continue-on-error: true
 
       - name: Record outcome
@@ -242,7 +247,10 @@ jobs:
           ai-primary-retries: "2"
           ai-primary-retry-delay-sec: "10"
           ai-max-tokens: "2048"
-          ai-request-timeout-sec: "120"
+          # 300s: a single-slot Ollama queues requests server-side, so
+          # the client budget must outlast worst queue depth across
+          # repos sharing one endpoint (~4 x 60-90s generations).
+          ai-request-timeout-sec: "300"
         continue-on-error: true
 
       - name: Record outcome
