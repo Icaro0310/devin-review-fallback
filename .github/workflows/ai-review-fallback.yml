@@ -94,7 +94,7 @@ env:
 
 jobs:
   classify:
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
     outputs:
       state: ${{ steps.c.outputs.state }}
     steps:
@@ -529,7 +529,7 @@ jobs:
     # degrade to UNAVAILABLE, never a hard job failure.
     needs: classify
     if: always() && needs.classify.outputs.state != 'EXECUTED'
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
     # Must exceed inputs.judge-wait-minutes — raise both together.
     timeout-minutes: 30
     permissions:
@@ -602,7 +602,7 @@ jobs:
   coverage:
     needs: [classify, review-a, judge]
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
     permissions:
       contents: read
       checks: write
