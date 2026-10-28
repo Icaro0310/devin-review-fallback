@@ -39,8 +39,8 @@ Verdicts:
 
 * ``devin=EXECUTED``            → success, coverage by Devin itself.
 * ``a and b EXECUTED``          → success, full fallback coverage.
-* ``b=EXECUTED`` (any a-state)  → success, ``covered b-only`` — B posts a
-                                  real review+verdict; A's infra flakes
+* ``b=EXECUTED`` (any a-state)  → success, ``covered b-only`` — B posts
+                                  real scan evidence; A's infra flakes
                                   stay visible in the description only.
 * ``a=EXECUTED`` alone          → ``action_required``, ``DEGRADED``
                                   prefix — partial evidence, human call.
@@ -82,8 +82,8 @@ def compute_verdict(devin: str, a: str, b: str,
     ``a_critical`` > 0 appends ``findings=blocking`` — the review still
     executed (conclusion stays success), but the merge gate must hold.
     This is the findings-as-data channel for reviewer A, whose own
-    comments are advisory; reviewer B's blockers surface as
-    request_changes reviews.
+    comments are advisory; reviewer B's findings surface in its posted
+    static-analysis comment.
     """
     desc_core = f"devin={devin} a={a} b={b}"
     suffix = f" findings=blocking(critical={a_critical})" if a_critical > 0 else ""
@@ -95,12 +95,13 @@ def compute_verdict(devin: str, a: str, b: str,
     if len(ran) == 2:
         return "success", f"covered — {desc_core}{suffix}", "COVERED"
     if b == EXECUTED:
-        # Reviewer B is the direct-Ollama lane: it always posts a real
-        # review comment plus a verdict, so its evidence alone covers the
-        # PR. Reviewer A (third-party action) flakes on event-payload
-        # races — its state is still recorded honestly in the
-        # description, but the gate must not stay hostage to infra
-        # flakiness outside the review itself.
+        # Reviewer B is the deterministic static-analysis lane (gitleaks
+        # + semgrep + ruff on the runner): it always posts a real
+        # findings comment plus a verdict, so its evidence alone covers
+        # the PR. Reviewer A (third-party action over Tailscale) flakes
+        # on event-payload races — its state is still recorded honestly
+        # in the description, but the gate must not stay hostage to
+        # infra flakiness outside the review itself.
         return ("success",
                 f"covered b-only — {desc_core} — "
                 f"reviewer A did not execute{suffix}",
