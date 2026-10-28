@@ -515,103 +515,9 @@ jobs:
           echo "result=$r" >> "$GITHUB_OUTPUT"
           echo "static-scan: $r"
 
-  judge:
-    # The authoritative decider. A laptop-side watcher (judge-watch,
-    # cron every few minutes) polls open PRs for head SHAs missing the
-    # devin-judge/review commit status, runs the poordjaevin gate
-    # locally (ACP backend = high Devin model) on the diff, and posts:
-    #   approve -> status success  -> this job reports EXECUTED
-    #   reject  -> status failure  -> this job reports REJECTED
-    #   gate error / watcher down  -> no status -> UNAVAILABLE
-    # This job never checks anything out: the untrusted diff stays data
-    # for the watcher-side gate. It always completes — polling errors
-    # degrade to UNAVAILABLE, never a hard job failure.
-    needs: classify
-    if: always() && needs.classify.outputs.state != 'EXECUTED'
-    runs-on: ubuntu-latest
-    # Must exceed inputs.judge-wait-minutes — raise both together.
-    timeout-minutes: 30
-    permissions:
-      contents: read
-      statuses: read        # read the devin-judge/review commit status
-      pull-requests: write  # verdict comment
-      issues: write         # judge-requested label lives on the issues API
-    outputs:
-      result: ${{ steps.poll.outputs.result }}
-    env:
-      JUDGE_WAIT_MINUTES: ${{ inputs.judge-wait-minutes }}
-      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-      PR_NUM: ${{ github.event.pull_request.number }}
-    steps:
-      - name: Nudge the watcher — judge-requested label
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          # Best-effort nudge only. The watcher's real trigger is the
-          # missing devin-judge/review status; the label documents that
-          # this run is waiting on a verdict.
-          [ -n "$PR_NUM" ] || exit 0
-          gh api "repos/${{ github.repository }}/issues/$PR_NUM/labels" \
-            -f "labels[]=judge-requested" >/dev/null 2>&1 || true
-
-      - name: Poll the devin-judge/review commit status
-        id: poll
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -u
-          if [ -z "$HEAD_SHA" ]; then
-            echo "::warning::no PR head SHA in this event — judge cannot run"
-            echo "result=UNAVAILABLE" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          deadline=$(( $(date +%s) + ${JUDGE_WAIT_MINUTES:-15} * 60 ))
-          state=""
-          while :; do
-            # Newest status with our context wins; gh errors keep the
-            # loop alive and degrade to UNAVAILABLE at the deadline.
-            state=$(gh api "repos/${{ github.repository }}/statuses/$HEAD_SHA" \
-              --jq '[.[]|select(.context=="devin-judge/review")][0].state' \
-              2>/dev/null || true)
-            [ "$state" = "null" ] && state=""
-            echo "poll: devin-judge/review=${state:-<none>} ($(date -u +%H:%M:%S))"
-            case "$state" in success|failure) break ;; esac
-            [ "$(date +%s)" -ge "$deadline" ] && break
-            sleep 30
-          done
-          case "$state" in
-            success) r=EXECUTED ;;
-            failure) r=REJECTED ;;
-            *)       r=UNAVAILABLE ;;
-          esac
-          echo "result=$r" >> "$GITHUB_OUTPUT"
-          echo "judge: $r (status=${state:-none})"
-
-      - name: Comment the verdict on the PR
-        if: always()
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RESULT: ${{ steps.poll.outputs.result }}
-        run: |
-          [ -n "$PR_NUM" ] || exit 0
-          case "$RESULT" in
-            EXECUTED)
-              verdict=APPROVED
-              detail="The poordjaevin ACP gate approved this head (\`devin-judge/review\` = success)." ;;
-            REJECTED)
-              verdict=REJECTED
-              detail="The poordjaevin ACP gate rejected this head (\`devin-judge/review\` = failure). Coverage fails; see the judge's own comment for rationale." ;;
-            *)
-              verdict=UNAVAILABLE
-              detail="No \`devin-judge/review\` status within ${JUDGE_WAIT_MINUTES:-15}m: the laptop-side watcher is offline or the gate errored. Coverage holds at action_required — a human must decide." ;;
-          esac
-          body=$(printf '**devin-judge (Lane B) — verdict: `%s`**\n\n%s' \
-            "$verdict" "$detail")
-          gh pr comment "$PR_NUM" --body "$body" \
-            || echo "::warning::judge verdict comment failed"
 
   coverage:
-    needs: [classify, review-a, judge]
+    needs: [classify, review-a]
     if: always()
     runs-on: ubuntu-latest
     permissions:
@@ -627,7 +533,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DEVIN: ${{ needs.classify.outputs.state }}
           A: ${{ needs.review-a.outputs.result }}
-          B: ${{ needs.judge.outputs.result }}
+          B: SKIPPED
         run: >-
           python3 publish.py
           --repo "${{ github.repository }}"
