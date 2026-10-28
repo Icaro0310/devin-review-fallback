@@ -83,7 +83,7 @@ jobs:
     # A small model answers a single prompt quickly; an unbounded job
     # pins the coverage gate for the platform default (6h) when the
     # tailnet or reviewer sticks.
-    timeout-minutes: 25
+    timeout-minutes: 30
     permissions:
       contents: read
       pull-requests: write
