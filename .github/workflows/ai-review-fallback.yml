@@ -70,6 +70,11 @@ on:
         required: false
         type: string
         default: "main"
+      runner:
+        description: "runs-on label for the light jobs (classify, judge, coverage). Pass 'self-hosted' from private repos whose runners exist; review-a and static-scan stay on ubuntu-latest (they need the tailscale action and pipx toolchain)."
+        required: false
+        type: string
+        default: "ubuntu-latest"
 
 concurrency:
   # Repo-wide: reviewer A's Ollama backend is a single-slot service, so
@@ -89,7 +94,7 @@ env:
 
 jobs:
   classify:
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
     outputs:
       state: ${{ steps.c.outputs.state }}
     steps:
@@ -523,7 +528,7 @@ jobs:
     # degrade to UNAVAILABLE, never a hard job failure.
     needs: classify
     if: always() && needs.classify.outputs.state != 'EXECUTED'
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
     # Must exceed inputs.judge-wait-minutes — raise both together.
     timeout-minutes: 30
     permissions:
@@ -608,7 +613,7 @@ jobs:
   coverage:
     needs: [classify, review-a, judge]
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
     permissions:
       contents: read
       checks: write
