@@ -26,7 +26,13 @@ name: auto-merge
 #   gh repo edit <owner>/<repo> --enable-auto-merge
 
 on:
-  workflow_call: {}
+  workflow_call:
+    inputs:
+      runner:
+        description: "runs-on label — private repos pass 'self-hosted' to use their own runner instead of billed minutes."
+        required: false
+        type: string
+        default: "ubuntu-latest"
 
 concurrency:
   group: auto-merge-${{ github.event.pull_request.number || github.sha }}
@@ -37,7 +43,7 @@ permissions:
 
 jobs:
   merge:
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
     timeout-minutes: 15
     permissions:
       contents: write
