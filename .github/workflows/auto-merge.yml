@@ -135,6 +135,22 @@ jobs:
                   bail(f"PR #{n}: required check '{ctx}' not green")
                   sys.exit(0)
 
+          # Universal red-check guard: ANY check-run on the head SHA that
+          # completed red blocks the merge, required or not. This is what
+          # stops "judge approved but tests failed" merges — critical on
+          # private repos where contexts=[] (no required checks on free
+          # tier) and on monorepos whose path-filtered test checks aren't
+          # required. In-progress checks don't block: their completion
+          # fires a status event that re-runs this workflow.
+          RED = {"failure", "cancelled", "timed_out", "action_required"}
+          red = [r["name"] for r in runs.values()
+                 if r.get("conclusion") in RED
+                 and "auto-merge" not in (r.get("name") or "")]
+          if red:
+              bail(f"PR #{n}: red check(s) on head SHA: {', '.join(red[:5])}"
+                   " — a failing test or gate cannot be merged over")
+              sys.exit(0)
+
           files = gh(f"repos/{repo}/pulls/{n}/files?per_page=100") or []
           names = [f.get("filename", "") for f in files]
           danger = [f for f in names if any(k in f.lower() for k in
