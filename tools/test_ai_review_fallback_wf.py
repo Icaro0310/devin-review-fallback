@@ -49,16 +49,17 @@ def test_no_checkout_of_pr_head():
 
 
 def test_fallback_jobs_gate_on_classifier():
-    for name in ("review-a", "static-scan", "judge"):
+    for name in ("static-scan", "judge"):
         block = _job_block(name)
         needs_line = next(l for l in block.splitlines() if "needs:" in l)
         assert "classify" in needs_line, needs_line
         assert "EXECUTED" in block
 
 
-def test_review_b_replaced_by_static_scan_and_judge():
-    """The authoritative lane-B is now the devin-judge verdict; the old
-    review-b job name must be gone."""
+def test_lane_a_and_review_b_are_gone():
+    """Lane A (Ollama reviewer) was retired — a 1.5B model is not a PR
+    decider, and the old review-b job name must be gone too."""
+    assert _job_block("review-a") == ""
     assert _job_block("review-b") == ""
     assert _job_block("static-scan") != ""
     assert _job_block("judge") != ""
@@ -87,7 +88,6 @@ def test_judge_polls_devin_judge_review_status():
     block = _job_block("judge")
     assert "devin-judge/review" in block
     assert "statuses/" in block
-    assert "judge-requested" in block
     assert "pull-requests: write" in block  # verdict comment
     assert "statuses: read" in block        # commit status read
 
@@ -99,10 +99,12 @@ def test_judge_wait_is_a_bounded_input():
 
 
 def test_judge_maps_verdict_states():
-    """success -> EXECUTED, failure -> REJECTED, else UNAVAILABLE."""
+    """success -> EXECUTED, failure -> REJECTED, error -> ERROR,
+    else UNAVAILABLE (verdict still in flight -> coverage pending)."""
     block = _job_block("judge")
     assert "success) r=EXECUTED" in block
     assert "failure) r=REJECTED" in block
+    assert "error)   r=ERROR" in block
     assert "UNAVAILABLE" in block
 
 
@@ -117,14 +119,18 @@ def test_coverage_reads_judge_not_static_scan():
     assert "judge" in needs_line
 
 
-def test_id_token_write_only_on_tailscale_lane():
-    """id-token: write exists for the Tailscale step of review-a only —
-    judge and static-scan have no OIDC need."""
-    assert "id-token: write" in _job_block("review-a")
-    for name in ("static-scan", "judge", "coverage", "classify"):
+def test_no_id_token_anywhere():
+    """With the Tailscale lane retired nothing needs OIDC — id-token
+    must not appear in any job."""
+    for name in ("classify", "static-scan", "judge", "coverage"):
         assert "id-token" not in _job_block(name), name
 
 
-def test_no_tailscale_off_lane_a():
-    for name in ("static-scan", "judge", "coverage"):
-        assert "tailscale/github-action" not in _job_block(name), name
+def test_no_tailscale_anywhere():
+    """The whole tailnet door is closed: no executable reference to the
+    action, the secret, or the endpoint vars may remain."""
+    assert "tailscale/github-action" not in TEXT
+    assert "TS_AUTHKEY" not in TEXT
+    assert "OLLAMA_TAILNET_URL" not in TEXT
+    assert "OLLAMA_MODEL" not in TEXT
+    assert "OLLAMA_URL" not in TEXT

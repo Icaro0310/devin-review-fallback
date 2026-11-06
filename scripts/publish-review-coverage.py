@@ -51,12 +51,16 @@ Verdicts:
                          lane A entirely: the judge is the final
                          decider, so its reject cannot be cleared by
                          advisory evidence.
-* ``b=EXECUTED``       → success — the judge approved. The description
-                         records whether lane A also executed
-                         (``judge-only`` is honest full coverage).
-* ``b`` anything else  → ``action_required`` — no judge verdict
-                         (UNAVAILABLE / FAILED / SKIPPED). Lane A alone
-                         cannot clear a PR; a human decides.
+* ``b=EXECUTED``       → success — the judge approved (lane A is
+                         retired, so coverage is judge-only).
+* ``b=ERROR``          → ``action_required`` — the judge ran and
+                         errored: a human decides, nothing is approved.
+* ``b`` anything else  → the check run stays ``in_progress`` and the
+                         status mirror stays ``pending``. A verdict not
+                         yet arrived is pending, not a failure: the
+                         laptop-side watcher completes this check run
+                         when ``devin-judge/review`` lands (or marks it
+                         ``action_required`` if the gate errored).
 
 Findings are deliberately NOT part of the verdict: a review that ran and
 found critical issues is successful execution. The merge gate reads
@@ -80,59 +84,55 @@ import sys
 COVERAGE_CONTEXT = "Review Coverage"
 EXECUTED = "EXECUTED"
 REJECTED = "REJECTED"
+ERROR = "ERROR"
 
 
 def compute_verdict(devin: str, a: str, b: str,
-                    a_critical: int = 0) -> tuple[str, str, str]:
-    """Return (check_conclusion, description, verdict).
+                    a_critical: int = 0) -> tuple[str, str | None, str, str]:
+    """Return (check_status, check_conclusion, description, verdict).
 
-    ``check_conclusion`` is the Checks-API conclusion: ``success``,
-    ``action_required`` or ``failure``. ``verdict`` is the coarse label
-    embedded in the description so a reader — human or gate — can
-    distinguish coverage kinds.
+    ``check_status`` is ``completed`` or ``in_progress``; the conclusion
+    is ``None`` while in progress. ``verdict`` is the coarse label
+    embedded in the description.
 
     ``b`` is the devin-judge verdict — the poordjaevin ACP gate is the
-    final decider (small models never make security decisions, so lane
-    A is evidence, never a decider). ``a_critical`` > 0 appends
-    ``findings=blocking`` — lane A's findings-as-data channel for the
-    merge gate.
+    final decider. ``a`` is informational only (lane A retired 2026-11).
     """
     desc_core = f"devin={devin} a={a} b={b}"
     suffix = f" findings=blocking(critical={a_critical})" if a_critical > 0 else ""
     if devin == EXECUTED:
-        return ("success",
+        return ("completed", "success",
                 f"devin=EXECUTED — primary review ran; fallback not needed{suffix}",
                 "EXECUTED")
     if b == REJECTED:
-        # The judge is the final decider: its reject overrides lane A
-        # entirely, whatever the advisory lanes found.
-        return ("failure",
+        # The judge is the final decider: its reject is terminal.
+        return ("completed", "failure",
                 f"judge rejected the PR — {desc_core}{suffix}",
                 "FAILURE")
     if b == EXECUTED:
-        # Judge approved. The description stays honest about lane A:
-        # it executed and reported findings, or it did not.
-        if a == EXECUTED:
-            return ("success",
-                    f"covered — judge approved; lane A also executed "
-                    f"— {desc_core}{suffix}",
-                    "COVERED")
-        return ("success",
-                f"covered judge-only — {desc_core} — "
-                f"reviewer A did not execute{suffix}",
+        return ("completed", "success",
+                f"covered — judge approved — {desc_core}{suffix}",
                 "COVERED")
-    # No judge verdict (UNAVAILABLE / FAILED / SKIPPED / unexpected):
-    # lane A alone cannot clear a PR — a human decides.
-    return ("action_required",
-            (f"ACTION_REQUIRED — no judge verdict — {desc_core} — "
-             f"lane A alone cannot clear a PR{suffix}"),
-            "ACTION_REQUIRED")
+    if b == ERROR:
+        # The judge ran and errored: the review cannot conclude — a
+        # human decides. Terminal, distinct from "not arrived yet".
+        return ("completed", "action_required",
+                f"ACTION_REQUIRED — judge errored — {desc_core} — "
+                f"a human must decide{suffix}",
+                "ACTION_REQUIRED")
+    # No judge verdict yet (UNAVAILABLE / SKIPPED / unexpected): pending
+    # is not a failure — the watcher completes this run when the
+    # verdict lands, or flips it to action_required on gate error.
+    return ("in_progress", None,
+            f"awaiting devin-judge verdict — {desc_core} — this check "
+            f"completes when devin-judge/review lands{suffix}",
+            "PENDING")
 
 
-def _mirror_state(conclusion: str) -> str:
+def _mirror_state(conclusion: str | None) -> str:
     """Check-run conclusion → commit-status state for the mirror."""
     return {"success": "success", "failure": "failure"}.get(
-        conclusion, "pending")
+        conclusion or "", "pending")
 
 
 def _gh(args: list[str]) -> bool:
@@ -148,23 +148,29 @@ def _gh(args: list[str]) -> bool:
     return proc.returncode == 0
 
 
-def post_check(repo: str, sha: str, conclusion: str, summary: str,
-               details_url: str | None) -> bool:
-    """The check run — the source of truth the gate reads."""
+def post_check(repo: str, sha: str, status: str, conclusion: str | None,
+               summary: str, details_url: str | None) -> bool:
+    """The check run — the source of truth the gate reads.
+
+    ``in_progress`` runs carry no conclusion: they complete later, when
+    the watcher-side judge verdict lands.
+    """
     cmd = [f"repos/{repo}/check-runs",
            "-f", f"name={COVERAGE_CONTEXT}", "-f", f"head_sha={sha}",
-           "-f", "status=completed", "-f", f"conclusion={conclusion}",
+           "-f", f"status={status}",
            "-f", f"output[title]={COVERAGE_CONTEXT}",
            "-f", f"output[summary]={summary}"]
+    if conclusion:
+        cmd += ["-f", f"conclusion={conclusion}"]
     if details_url:
         cmd += ["-f", f"details_url={details_url}"]
     return _gh(cmd)
 
 
-def post_status(repo: str, sha: str, conclusion: str, description: str,
-                target_url: str | None) -> bool:
+def post_status(repo: str, sha: str, conclusion: str | None,
+                description: str, target_url: str | None) -> bool:
     """Compatibility mirror: keeps the gate's status-event trigger alive
-    for success, and never shows green without a judge verdict."""
+    for success, and stays ``pending`` while the verdict is in flight."""
     cmd = [f"repos/{repo}/statuses/{sha}",
            "-f", f"state={_mirror_state(conclusion)}",
            "-f", f"context={COVERAGE_CONTEXT}",
@@ -179,7 +185,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--repo", required=True)
     parser.add_argument("--sha", required=True)
     parser.add_argument("--devin", required=True)
-    parser.add_argument("--a", required=True)
+    parser.add_argument("--a", default="DISABLED",
+                        help="lane A outcome (retired lane — defaults to DISABLED)")
     parser.add_argument("--b", required=True)
     parser.add_argument("--a-critical", type=int, default=0,
                         help="critical findings reported by reviewer A")
@@ -187,18 +194,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
 
-    conclusion, description, verdict = compute_verdict(
+    status, conclusion, description, verdict = compute_verdict(
         args.devin, args.a, args.b, a_critical=args.a_critical)
     print(f"verdict={verdict}")
+    print(f"status={status}")
     print(f"conclusion={conclusion}")
     print(f"description={description}")
     out = os.environ.get("GITHUB_OUTPUT")
     if out:
         with open(out, "a", encoding="utf-8") as fh:
-            fh.write(f"verdict={verdict}\nconclusion={conclusion}\n")
+            fh.write(f"verdict={verdict}\nconclusion={conclusion or status}\n")
     if args.dry_run:
         return 0
-    ok = post_check(args.repo, args.sha, conclusion, description,
+    ok = post_check(args.repo, args.sha, status, conclusion, description,
                     args.target_url)
     if not ok:
         print("::error::failed to post Review Coverage check run",
@@ -207,12 +215,13 @@ def main(argv: list[str] | None = None) -> int:
     if not post_status(args.repo, args.sha, conclusion, description,
                        args.target_url):
         # the check run (source of truth) is posted; the mirror failing
-        # only loses the status-event retrigger — action_required stays
-        # held either way, so warn instead of hard-failing the job.
+        # only loses the status-event retrigger — warn instead of
+        # hard-failing the job.
         print("::warning::Review Coverage status mirror failed — "
               "check run posted, status-event retrigger lost",
               file=sys.stderr)
-    print(f"posted Review Coverage check={conclusion} on {args.sha[:12]}")
+    print(f"posted Review Coverage check={status}"
+          f"{':' + conclusion if conclusion else ''} on {args.sha[:12]}")
     return 0
 
 
