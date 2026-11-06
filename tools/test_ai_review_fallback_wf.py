@@ -95,7 +95,7 @@ def test_judge_polls_devin_judge_review_status():
 def test_judge_wait_is_a_bounded_input():
     assert "judge-wait-minutes" in TEXT
     assert "JUDGE_WAIT_MINUTES" in TEXT
-    assert re.search(r"judge-wait-minutes:.*?default: 15", TEXT, re.S)
+    assert re.search(r"judge-wait-minutes:.*?default: 5", TEXT, re.S)
 
 
 def test_judge_maps_verdict_states():

@@ -56,10 +56,10 @@ on:
         type: number
         default: 180
       judge-wait-minutes:
-        description: "Minutes the judge job polls for the devin-judge/review commit status before reporting UNAVAILABLE."
+        description: "Minutes the judge job polls for the devin-judge/review commit status before reporting UNAVAILABLE. Keep short: a missing verdict posts coverage in_progress and the status-event retrigger completes it when the verdict lands — waiting here just burns runner minutes."
         required: false
         type: number
-        default: 15
+        default: 5
       scripts-ref:
         description: "Git ref of this repo to fetch the helper scripts from (pin a tag for supply-chain safety)."
         required: false
@@ -95,7 +95,7 @@ jobs:
         run: >-
           python3 classify.py
           --repo "${{ github.repository }}"
-          --sha "${{ github.event.pull_request.head.sha }}"
+          --sha "${{ github.event.pull_request.head.sha || github.event.sha }}"
           --wait-seconds ${{ inputs.wait-seconds }}
 
   static-scan:
@@ -432,7 +432,7 @@ jobs:
       result: ${{ steps.poll.outputs.result }}
     env:
       JUDGE_WAIT_MINUTES: ${{ inputs.judge-wait-minutes }}
-      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.sha }}
       PR_NUM: ${{ github.event.pull_request.number }}
     steps:
       - name: Poll the devin-judge/review commit status
@@ -515,7 +515,7 @@ jobs:
         run: >-
           python3 publish.py
           --repo "${{ github.repository }}"
-          --sha "${{ github.event.pull_request.head.sha }}"
+          --sha "${{ github.event.pull_request.head.sha || github.event.sha }}"
           --devin "${DEVIN:-SKIPPED}"
           --b "${B:-SKIPPED}"
           --target-url "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
