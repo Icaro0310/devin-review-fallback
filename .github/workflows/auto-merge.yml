@@ -178,7 +178,7 @@ jobs:
       - name: Judge the merge action
         id: judge
         if: steps.gate.outputs.candidate == 'true'
-        uses: Icaro0310/devin-judge-action@v0.1.2
+        uses: Icaro0310/devin-judge-action@v0.1.3
         with:
           action-file: judge-action.txt
           backend: nli
