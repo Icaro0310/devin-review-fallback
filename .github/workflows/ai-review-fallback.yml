@@ -83,6 +83,12 @@ permissions:
 jobs:
   classify:
     runs-on: ${{ inputs.runner }}
+    # Private repos need statuses:read or the /status read 403s and every
+    # head degrades to UNVERIFIED — fallbacks then run even when the
+    # primary reviewer EXECUTED (DL-02c6).
+    permissions:
+      contents: read
+      statuses: read
     outputs:
       state: ${{ steps.c.outputs.state }}
     steps:

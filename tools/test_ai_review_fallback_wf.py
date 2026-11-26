@@ -84,6 +84,15 @@ def test_judge_never_checks_out_pr_code():
     assert "id-token" not in block
 
 
+def test_classify_reads_devin_review_status():
+    """classify polls /commits/{sha}/status — on private repos that read
+    403s without statuses:read and every head degrades to UNVERIFIED, so
+    the fallback lanes run even when the primary reviewer EXECUTED."""
+    block = _job_block("classify")
+    assert "statuses: read" in block
+    assert "classify.py" in block
+
+
 def test_judge_polls_devin_judge_review_status():
     block = _job_block("judge")
     assert "devin-judge/review" in block

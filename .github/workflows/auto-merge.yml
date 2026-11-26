@@ -21,9 +21,12 @@ name: auto-merge
 # means no merge. Caller must trigger on pull_request_target — nothing
 # from the PR is checked out or executed (API reads only).
 #
-# Required caller configuration: none beyond the workflow permissions —
-# but the repository must have auto-merge enabled:
+# Required caller configuration: the repository must have auto-merge
+# enabled:
 #   gh repo edit <owner>/<repo> --enable-auto-merge
+# The calling job must also grant statuses:read + checks:read — caller
+# permissions cap the reusable workflow's GITHUB_TOKEN, so granting them
+# only here is not enough (see examples/caller.yml).
 
 on:
   workflow_call:
@@ -48,6 +51,13 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      # Private repos need both or the check-runs/combined-status reads
+      # 403 and the gate degrades silently: with required checks every
+      # context reads "not green" (never merges); without them the
+      # red-check guard sees an empty list and passes vacuously —
+      # failing CI can be merged over (DL-02c6).
+      checks: read
+      statuses: read
     steps:
       - name: Resolve candidate PR and gate conditions
         id: gate
