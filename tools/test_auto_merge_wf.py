@@ -25,9 +25,13 @@ def _job_block(text: str, name: str) -> str:
 
 def test_guards_read_check_runs_and_combined_status():
     """The endpoints the gate calls — keep them pinned so the permission
-    block below stays justified, not cargo-culted."""
-    assert "check-runs" in TEXT
-    assert "commits/{head_sha}/status" in TEXT or "/status" in TEXT
+    block below stays justified, not cargo-culted. Match the actual
+    gh(...) call lines: a bare substring also hits the comments that
+    justify the permissions, so the test would pass with the call
+    removed."""
+    calls = "\n".join(l for l in TEXT.splitlines() if "gh(" in l)
+    assert re.search(r'commits/\{head_sha\}/check-runs', calls)
+    assert re.search(r'commits/\{head_sha\}/status', calls)
 
 
 def test_merge_job_declares_status_and_check_reads():

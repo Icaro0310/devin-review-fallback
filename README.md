@@ -50,7 +50,7 @@ One PR comment aggregates per-tool findings (`file:line` only; matched secrets a
 
 1. Run the laptop-side watcher (`judge-watch`, on cron) with `gh` auth that can post commit statuses and check runs; it is what turns PR heads into `devin-judge/review` verdicts and completes `Review Coverage`. Without it, coverage stays pending forever — never green.
 2. Copy `examples/caller.yml` → `.github/workflows/review-fallback.yml` in your repo.
-3. Optional (auto-merge): `gh repo edit <you>/<repo> --enable-auto-merge`.
+3. Optional (auto-merge): `gh repo edit <you>/<repo> --enable-auto-merge`. The calling job must also grant `statuses: read` + `checks: read` (shipped in `examples/caller.yml`) — caller permissions cap the reusable workflow's token, and a call missing them is rejected at workflow validation.
 
 No repo secrets or variables are needed. Pin `@v1` instead of `@main` for supply-chain safety.
 
