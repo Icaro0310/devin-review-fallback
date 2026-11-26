@@ -31,7 +31,9 @@ def test_guards_read_check_runs_and_combined_status():
     removed."""
     calls = "\n".join(l for l in TEXT.splitlines() if "gh(" in l)
     assert re.search(r'commits/\{head_sha\}/check-runs', calls)
-    assert re.search(r'commits/\{head_sha\}/status', calls)
+    # Anchor the path end: /statuses is the list endpoint, not the
+    # combined status the gate and its permission comment describe.
+    assert re.search(r'commits/\{head_sha\}/status(?![a-zA-Z])', calls)
 
 
 def test_merge_job_declares_status_and_check_reads():
